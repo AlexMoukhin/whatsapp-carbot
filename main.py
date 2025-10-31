@@ -28,20 +28,22 @@ async def webhook(req: Request):
     data = await req.json()
     print("📩 Входящее сообщение:", json.dumps(data, indent=2, ensure_ascii=False))
 
-    # Безопасный парсинг входящих сообщений
     try:
         message = data["entry"][0]["changes"][0]["value"]["messages"][0]
         text = message.get("text", {}).get("body", "")
         phone = message["from"]
 
         # ⚙️ Форматируем телефон под требования WhatsApp Sandbox
-        # Удаляем все нецифровые символы
         phone = ''.join(filter(str.isdigit, phone))
 
-        # Если хочешь зафиксировать номер вручную (для Sandbox), раскомментируй:
-        # phone = "79258608489"
+        # Временно жёстко фиксируем свой номер (для Sandbox)
+        phone = "79258608489"
 
+        # 📞 Отладка
+        print("📞 Исходный номер из входящего JSON:", message["from"])
+        print("📋 Все входящие данные:", json.dumps(data, indent=2, ensure_ascii=False))
         print(f"👤 От пользователя {phone}: {text}")
+
     except Exception as e:
         print("⚠️ Ошибка разбора входящих данных:", e)
         return {"status": "ignored"}
@@ -60,9 +62,7 @@ async def webhook(req: Request):
     }
 
     r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
-    print("🧠 Ответ от OpenAI:", r.text)  # логируем полный ответ API
-    print("📞 номер на который отправляется номер из входящего JSON:", message["from"])
-    print("📋 Все входящие данные:", json.dumps(data, indent=2, ensure_ascii=False))
+    print("🧠 Ответ от OpenAI:", r.text)
 
     if r.status_code != 200:
         print("⚠️ Ошибка OpenAI:", r.text)
@@ -76,7 +76,7 @@ async def webhook(req: Request):
     reply = data["choices"][0]["message"]["content"]
     print("🤖 Ответ GPT:", reply)
 
-    # 📤 Отправляем ответ пользователю в WhatsApp
+    # 📤 Ответ пользователю в WhatsApp
     wa_url = f"https://graph.facebook.com/v20.0/{os.getenv('PHONE_ID')}/messages"
     wa_headers = {
         "Authorization": f"Bearer {os.getenv('WHATSAPP_TOKEN')}",
