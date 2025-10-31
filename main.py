@@ -61,6 +61,8 @@ async def webhook(req: Request):
 
     r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
     print("🧠 Ответ от OpenAI:", r.text)  # логируем полный ответ API
+    print("📞 номер на который отправляется номер из входящего JSON:", message["from"])
+    print("📋 Все входящие данные:", json.dumps(data, indent=2, ensure_ascii=False))
 
     if r.status_code != 200:
         print("⚠️ Ошибка OpenAI:", r.text)
