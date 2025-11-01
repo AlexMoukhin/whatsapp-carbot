@@ -1,95 +1,79 @@
 from fastapi import FastAPI, Request
-import requests, os, json
+import requests, os, traceback
 
 app = FastAPI()
 
-# 🔐 Токен, который ты указал в Meta (Verify Token)
-VERIFY_TOKEN = "carbot123"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 
-
-# ✅ Проверка webhook при подключении (GET)
-@app.get("/webhook")
-async def verify(request: Request):
-    params = request.query_params
-    if params.get("hub.verify_token") == VERIFY_TOKEN:
-        return int(params.get("hub.challenge"))
-    return {"error": "Invalid token"}
-
-
-# 🟢 Проверка доступности сервера
 @app.get("/")
 def root():
     return {"status": "ok"}
 
-
-# 💬 Основной обработчик сообщений WhatsApp → GPT → WhatsApp
+# 💬 Вебхук от Telegram
 @app.post("/webhook")
-async def webhook(req: Request):
-    data = await req.json()
-    print("📩 Входящее сообщение:", json.dumps(data, indent=2, ensure_ascii=False))
-
+async def telegram_webhook(req: Request):
     try:
-        message = data["entry"][0]["changes"][0]["value"]["messages"][0]
-        text = message.get("text", {}).get("body", "")
-        phone = message["from"]
+        data = await req.json()
+        print("📩 Incoming Telegram:", data)
 
-        # ⚙️ Форматируем телефон под требования WhatsApp Sandbox
-        phone = ''.join(filter(str.isdigit, phone))
+        # Проверяем наличие сообщения
+        if "message" not in data:
+            print("⚠️ Нет поля 'message' в запросе")
+            return {"status": "ignored"}
 
-        # Временно жёстко фиксируем свой номер (для Sandbox)
-        phone = "79258608489"
+        chat_id = data["message"]["chat"]["id"]
+        user_text = data["message"].get("text", "")
 
-        # 📞 Отладка
-        print("📞 Исходный номер из входящего JSON:", message["from"])
-        print("📋 Все входящие данные:", json.dumps(data, indent=2, ensure_ascii=False))
-        print(f"👤 От пользователя {phone}: {text}")
+        if not user_text:
+            print("⚠️ Пустое сообщение — ничего не отправляем в GPT")
+            return {"status": "ignored"}
+
+        print(f"👤 Пользователь {chat_id} написал: {user_text}")
+
+        # 🧠 Запрос к OpenAI
+        try:
+            r = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_KEY}"},
+                json={
+                    "model": "gpt-3.5-turbo",
+                    "messages": [
+                        {"role": "system", "content": "Ты консультант автосалона. Отвечай коротко и по делу."},
+                        {"role": "user", "content": user_text}
+                    ]
+                },
+                timeout=20
+            )
+
+            if not r.ok:
+                print(f"❌ Ошибка OpenAI: {r.status_code} {r.text}")
+                reply = f"⚠️ Ошибка GPT ({r.status_code}): {r.text[:300]}"
+            else:
+                gpt_data = r.json()
+                reply = gpt_data["choices"][0]["message"]["content"]
+                print(f"🤖 GPT ответ: {reply}")
+
+        except Exception as e:
+            print("🔥 Исключение при запросе к OpenAI:", traceback.format_exc())
+            reply = "⚠️ Ошибка при обращении к GPT API."
+
+        # 📤 Ответ пользователю в Telegram
+        try:
+            t_resp = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json={"chat_id": chat_id, "text": reply},
+                timeout=10
+            )
+
+            if not t_resp.ok:
+                print(f"❌ Ошибка Telegram API: {t_resp.status_code} {t_resp.text}")
+
+        except Exception as e:
+            print("🔥 Исключение при отправке сообщения в Telegram:", traceback.format_exc())
+
+        return {"status": "ok"}
 
     except Exception as e:
-        print("⚠️ Ошибка разбора входящих данных:", e)
-        return {"status": "ignored"}
-
-    # 🧠 GPT ответ
-    headers = {"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}"}
-    payload = {
-        "model": "gpt-3.5-turbo",
-        "messages": [
-            {
-                "role": "system",
-                "content": "Ты консультант автосалона. Отвечай чётко и дружелюбно, пиши коротко и по существу."
-            },
-            {"role": "user", "content": text}
-        ]
-    }
-
-    r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
-    print("🧠 Ответ от OpenAI:", r.text)
-
-    if r.status_code != 200:
-        print("⚠️ Ошибка OpenAI:", r.text)
-        return {"status": "openai_error"}
-
-    data = r.json()
-    if "choices" not in data:
-        print("⚠️ Нет поля choices в ответе:", data)
-        return {"status": "openai_format_error"}
-
-    reply = data["choices"][0]["message"]["content"]
-    print("🤖 Ответ GPT:", reply)
-
-    # 📤 Ответ пользователю в WhatsApp
-    wa_url = f"https://graph.facebook.com/v20.0/{os.getenv('PHONE_ID')}/messages"
-    wa_headers = {
-        "Authorization": f"Bearer {os.getenv('WHATSAPP_TOKEN')}",
-        "Content-Type": "application/json"
-    }
-    wa_payload = {
-        "messaging_product": "whatsapp",
-        "to": phone,
-        "type": "text",
-        "text": {"body": reply}
-    }
-
-    resp = requests.post(wa_url, headers=wa_headers, json=wa_payload)
-    print("📤 Ответ WhatsApp API:", resp.text)
-
-    return {"status": "ok"}
+        print("🚨 Общая ошибка вебхука:", traceback.format_exc())
+        return {"status": "error", "details": str(e)}
